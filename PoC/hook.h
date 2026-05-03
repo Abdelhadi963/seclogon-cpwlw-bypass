@@ -35,9 +35,10 @@
 #define CALLSITE_OFFSET  0x768
 #define SECL_PID_OFFSET  0xD8
 #define PATCH_SIZE       5
-#define STUB_SIZE        27
-#define STUB_PID_OFF     1
-#define STUB_ADDR_OFF    19
+#define STUB_SIZE        39
+#define STUB_PID_OFF     0x01   // spoofPid DWORD
+#define STUB_RET_OFF     0x17   // CommonW+769 retaddr qword
+#define STUB_ADDR_OFF    0x1F   // c_Secl addr qword
 
 typedef struct {
     BYTE   *pCallSite;
@@ -50,13 +51,26 @@ typedef struct {
 static HookCtx g_hook = {0};
 static BYTE   *g_stub  = NULL;
 
+// stub layout (39 bytes) - verified working in WinDbg:
+//
+//   [00] B8 xx xx xx xx        MOV EAX, spoofPid        (5)
+//   [05] 89 81 D8 00 00 00     MOV [RCX+D8h], EAX       (6)  patch SECL_REQUEST.dwProcessId
+//   [0B] FF 35 06 00 00 00     PUSH [RIP+6]              (6)  RIP=0x11 -> pushes [0x17] = CommonW+769
+//   [11] FF 25 08 00 00 00     JMP  [RIP+8]              (6)  RIP=0x17 -> jumps to  [0x1F] = c_Secl
+//   [17] retaddr qword         CommonW+769 = pCallSite+5 (8)  patched at install
+//   [1F] c_Secl  qword         c_SeclCreateProcess...    (8)  patched at install
+//
+// why PUSH then JMP instead of CALL:
+//   our E9 JMP to the stub does NOT push a return address (unlike the original E8).
+//   so CommonW+769 is never on the stack. we manually PUSH it before jumping to
+//   c_Secl so its RET pops CommonW+769 and returns there cleanly.
 static const BYTE g_stubTemplate[STUB_SIZE] = {
-    0xB8, 0x00, 0x00, 0x00, 0x00,           // [00] MOV EAX, imm32   <- spoofPid
-    0x89, 0x81, 0xD8, 0x00, 0x00, 0x00,     // [05] MOV [RCX+D8h], EAX
-    0xFF, 0x15, 0x02, 0x00, 0x00, 0x00,     // [11] CALL [RIP+2]
-    0xEB, 0x08,                              // [17] JMP +8
-    0x00, 0x00, 0x00, 0x00,                  // [19] real func addr lo
-    0x00, 0x00, 0x00, 0x00                   // [23] real func addr hi
+    0xB8, 0x00, 0x00, 0x00, 0x00,                          // [00] MOV EAX, spoofPid
+    0x89, 0x81, 0xD8, 0x00, 0x00, 0x00,                    // [05] MOV [RCX+D8h], EAX
+    0xFF, 0x35, 0x06, 0x00, 0x00, 0x00,                    // [0B] PUSH [RIP+6] -> retaddr
+    0xFF, 0x25, 0x08, 0x00, 0x00, 0x00,                    // [11] JMP  [RIP+8] -> c_Secl
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,        // [17] retaddr qword (CommonW+769)
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00         // [1F] c_Secl  qword
 };
 
 // allocate executable memory within +-2GB of pNear for E9 rel32 reach
@@ -114,8 +128,7 @@ static DWORD _ScanCallSite(BYTE *pBase) {
         if (memcmp(pBase + i, g_callSitePattern, 16) != 0) continue;
         DWORD callOff = i + 16;
         if (pBase[callOff] == 0xE8) {
-            printf("[hook] call site pattern matched at +0x%lX -> E8 at +0x%lX\n",
-                   i, callOff);
+            DBG_OK("call site pattern matched at +0x%lX -> E8 at +0x%lX", i, callOff);
             return callOff;
         }
     }
@@ -162,6 +175,7 @@ static BOOL HookInstall(DWORD spoofPid) {
     // build stub
     memcpy(g_stub, g_stubTemplate, STUB_SIZE);
     *(DWORD  *)(g_stub + STUB_PID_OFF)  = spoofPid;
+    *(UINT64 *)(g_stub + STUB_RET_OFF)  = (UINT64)(pCallSite + 5); // CommonW+769
     *(UINT64 *)(g_stub + STUB_ADDR_OFF) = (UINT64)pRealFn;
     FlushInstructionCache(GetCurrentProcess(), g_stub, STUB_SIZE);
 
@@ -194,12 +208,19 @@ static BOOL HookInstall(DWORD spoofPid) {
 
 static void HookRemove(void) {
     if (!g_hook.installed) return;
+
+    // restore original E8 bytes at call site
     DWORD oldProt = 0;
     VirtualProtect(g_hook.pCallSite, PATCH_SIZE, PAGE_EXECUTE_READWRITE, &oldProt);
     memcpy(g_hook.pCallSite, g_hook.origBytes, PATCH_SIZE);
     VirtualProtect(g_hook.pCallSite, PATCH_SIZE, oldProt, &oldProt);
     FlushInstructionCache(GetCurrentProcess(), g_hook.pCallSite, PATCH_SIZE);
-    if (g_stub) { VirtualFree(g_stub, 0, MEM_RELEASE); g_stub = NULL; }
+
+    // stub page intentionally NOT freed here.
+    // CALL [RIP+2] inside the stub pushed a return address back into the stub.
+    // the call stack is still unwinding through that address when we get here.
+    // freeing now causes an access violation. OS reclaims the page on exit.
+
     g_hook.installed = FALSE;
     DBG_OK("hook removed");
 }

