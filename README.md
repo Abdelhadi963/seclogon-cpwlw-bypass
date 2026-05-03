@@ -267,7 +267,13 @@ The approach is straightforward: get the address of `CreateProcessWithLogonCommo
 //   xx xx xx xx xx xx xx xx  real c_Secl addr
 ```
 
-I assembled all of this into a PoC you can find the full code in my GitHub repository:  .
+I assembled all of this into a PoC you can find the full code in my GitHub repository: [seclogon-cpwlw-bypass](https://github.com/Abdelhadi963/seclogon-cpwlw-bypass.git).
+
+To build the poc
+
+```bash
+x86_64-w64-mingw32-gcc main.c -o PoC.exe -lntdll -static -static-libgcc -DDEBUG_BUILD=1
+```
 
 Let's now test it from a SYSTEM context.
 
