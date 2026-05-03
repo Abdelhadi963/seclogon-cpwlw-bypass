@@ -293,7 +293,7 @@ It is worth pointing out that this technique is not limited to SYSTEM contexts. 
 
 What looked like a simple token impersonation problem turned out to be a subtle interaction between the RPC client stub, the seclogon service's impersonation model, and the access rights of the calling process. The key insight is that seclogon does not just validate the caller's token — it actively uses that token to open the caller's own process, creating a hard dependency on process ownership that has nothing to do with token privileges or integrity level.
 
-By patching a single DWORD in the marshaled RPC request structure before it leaves the client, we can satisfy seclogon's requirement and call `CreateProcessWithLogonW` successfully from any context, including SYSTEM. But beyond the bypass itself, this also unlocks a cleaner primitive: spawning a process under arbitrary credentials with a spoofed parent PID, simply by supplying the current user's own credentials. No token manipulation, no privilege requirements — just a small patch to the RPC structure before it goes out on the wire.
+By patching a single DWORD in the marshaled RPC request structure before it leaves the client, we can satisfy seclogon's requirement and call `CreateProcessWithLogonW` successfully from any context, including SYSTEM. But beyond the bypass itself, this also unlocks a cleaner primitive: spawning a process under arbitrary credentials with a spoofed parent PID, simply by supplying the current user's own credentials. No token manipulation, no privilege requirements just a small patch to the RPC structure before it goes out on the wire.
 
 Happy hacking I hope this was a useful read.
 
