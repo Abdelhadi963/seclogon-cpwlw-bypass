@@ -47,7 +47,7 @@ If we take a look at `CreateProcessWithTokenW`, we can see it calls the same int
 
 <figure><img src=".gitbook/assets/image (5).png" alt=""><figcaption></figcaption></figure>
 
-If we take a deeper look into `CreateProcessWithLogonCommonW`, we can see it calls `c_SeclCreateProcessWithLogonW`  the actual RPC client stub that marshals the request and sends it over to the seclogon service.
+If we take a deeper look into `CreateProcessWithLogonCommonW`, we can see it calls `c_SeclCreateProcessWithLogonW` the actual RPC client stub that marshals the request and sends it over to the seclogon service.
 
 <figure><img src=".gitbook/assets/image (6).png" alt=""><figcaption></figcaption></figure>
 
@@ -57,11 +57,11 @@ What `CreateProcessWithLogonCommonW` actually does is take the provided argument
 
 The layout of this structure can be recovered using tools like RpcView, or by referencing the ReactOS source where a lot of Windows internal structures have already been reversed. I also found an excellent piece of research on this exact topic where the author built a direct RPC client to talk to seclogon and spawn a process: [SecLogon-RPC](https://github.com/CarlosG13/SecLogon-RPC)
 
-In that research, the author sets the process ID in the request structure to an arbitrary PID to spoof the parent from  `STARTUPINFOEX`  structure bug. From my earlier research into seclogon I also came across a great post by [SplinterCod3 ](https://splintercod3.blogspot.com/p/the-hidden-side-of-seclogon-part-3.html)where he uses a similar technique setting the PPID and stealing arbitrary handles from privileged processes like LSASS but via `PEB`.
+In that research, the author sets the process ID in the request structure to an arbitrary PID to spoof the parent from `STARTUPINFOEX` structure bug. From my earlier research into seclogon I also came across a great post by [SplinterCod3 ](https://splintercod3.blogspot.com/p/the-hidden-side-of-seclogon-part-3.html)where he uses a similar technique setting the PPID and stealing arbitrary handles from privileged processes like LSASS but via `PEB`.
 
 At this point the issue was starting to become clear. There is a step where `c_SeclCreateProcessWithLogonW` embeds the caller's PID in this case `TokenDump.exe` into the RPC request and sends it to the seclogon server, which then tries to open that process. Notably, this `OpenProcess` call is not present on the client side it happens entirely within seclogon.
 
-<figure><img src=".gitbook/assets/image (8).png" alt=""><figcaption></figcaption></figure>
+<figure><img src=".gitbook/assets/image (7).png" alt=""><figcaption></figcaption></figure>
 
 A quick reminder on how RPC servers work in general: the server impersonates the client token to perform tasks in the caller's security context. Since seclogon runs as SYSTEM, it needs to impersonate the caller to avoid doing everything as SYSTEM on behalf of arbitrary clients.
 
@@ -98,11 +98,11 @@ This is also exactly why the bypass works: by pointing `dwProcessId` at a user-o
 To summarize:
 
 {% hint style="info" %}
-Thread impersonates filtered k.mori token\
--> RPC call to seclogon with dwProcessId = TokenDump.exe PID\
--> seclogon: RpcImpersonateClient() -> wearing filtered k.mori token\
--> seclogon: OpenProcess(0x4C0, TokenDump.exe PID)\
--> filtered medium token cannot open SYSTEM process\
+Thread impersonates filtered k.mori token\
+-> RPC call to seclogon with dwProcessId = TokenDump.exe PID\
+-> seclogon: RpcImpersonateClient() -> wearing filtered k.mori token\
+-> seclogon: OpenProcess(0x4C0, TokenDump.exe PID)\
+-> filtered medium token cannot open SYSTEM process\
 -> 0x00000005 ACCESS\_DENIED returned to caller
 {% endhint %}
 
@@ -121,7 +121,7 @@ we can see to procedure are exposed by seclogon
 
 <figure><img src=".gitbook/assets/image (11).png" alt=""><figcaption></figcaption></figure>
 
-Both callable procedures pack the request arguments into `struct Struct_204_t*`  this is definitively the RPC request structure that maps to `_SECL_REQUEST`.
+Both callable procedures pack the request arguments into `struct Struct_204_t*` this is definitively the RPC request structure that maps to `_SECL_REQUEST`.
 
 ```c
 typedef struct Struct_204_t
@@ -189,7 +189,7 @@ Type `g` to resume execution and we hit the first breakpoint at `CreateProcessWi
 In Windows x64, the first four integer or pointer arguments to a function are passed in registers instead of on the stack: the first argument goes in `RCX`, the second in `RDX`, the third in `R8`, and the fourth in `R9`. If a function takes more than four arguments, the remaining ones are placed on the stack. When reversing code, this means that just before a `call`, the values loaded into those registers are usually the function’s first four parameters.
 {% endhint %}
 
-Following the x64 calling convention, the first argument (username) should be in `RCX`, the domain name in `RDX`, the password in `R8`, and since we did not explicitly set a logon flag, `R9` will just be `0` or garbage  that slot is effectively unused in this call.
+Following the x64 calling convention, the first argument (username) should be in `RCX`, the domain name in `RDX`, the password in `R8`, and since we did not explicitly set a logon flag, `R9` will just be `0` or garbage that slot is effectively unused in this call.
 
 <figure><img src=".gitbook/assets/image (13).png" alt=""><figcaption></figcaption></figure>
 
@@ -214,11 +214,11 @@ We can see the call clearly. Typing `g` again hits the second breakpoint at `Cre
 
 <figure><img src=".gitbook/assets/image (16).png" alt=""><figcaption></figcaption></figure>
 
-This matches exactly what we found in the static analysis. We can also disassemble `CreateProcessWithLogonCommonW` in WinDbg to locate the call into `c_SeclCreateProcessWithLogonW`  though keep in mind this function is large, over 600 lines as we saw in IDA, so we need to scroll through a bit to find the call site.
+This matches exactly what we found in the static analysis. We can also disassemble `CreateProcessWithLogonCommonW` in WinDbg to locate the call into `c_SeclCreateProcessWithLogonW` though keep in mind this function is large, over 600 lines as we saw in IDA, so we need to scroll through a bit to find the call site.
 
 <figure><img src=".gitbook/assets/image (17).png" alt=""><figcaption></figcaption></figure>
 
-we can see is preparing the args into rcx and rdx register 2 args as  we saw in IDA so we can record this pattern because we will need it later when we find where is the offset of the  caller pid in the rcx so that we can patch it befor passed into the call
+we can see is preparing the args into rcx and rdx register 2 args as we saw in IDA so we can record this pattern because we will need it later when we find where is the offset of the caller pid in the rcx so that we can patch it befor passed into the call
 
 ```asm
 // Call site pattern (verified Win11 26200, stable since Vista):
@@ -270,9 +270,9 @@ Now just hit `g` and let's see the cmd fireing up.
 
 <figure><img src=".gitbook/assets/image (23).png" alt=""><figcaption></figcaption></figure>
 
-And there it is  we successfully spawned an interactive session as `k.kaneki` using `CreateProcessWithLogonW` from a SYSTEM context, with the parent PID spoofed to `explorer.exe`. Root cause confirmed, hypothesis validated.
+And there it is we successfully spawned an interactive session as `k.kaneki` using `CreateProcessWithLogonW` from a SYSTEM context, with the parent PID spoofed to `explorer.exe`. Root cause confirmed, hypothesis validated.
 
-## hooking&#x20;
+## hooking
 
 Now that we fully understand the calling mechanism, we can hook the call site of `c_SeclCreateProcessWithLogonW` inside `CreateProcessWithLogonCommonW` with a stub that patches `[RCX+0xD8]` to a user-owned PID before the RPC call fires.
 
@@ -303,7 +303,7 @@ The hook fired successfully and the session spawned. The only remaining cleanup 
 
 ### Stub Revision: The Missing Return Address
 
-The original `E8` instruction in `CreateProcessWithLogonCommonW` would have pushed `CommonW+0x769` as the return address before jumping to `c_Secl`. Our `E9 JMP` replacement pushes nothing  so `CommonW+0x769` is never on the stack. The `CALL [RIP+2]` in the stub pushes the wrong return address (`stub+0x11`), causing `c_Secl` to return into the stub instead of back into `CommonW`, corrupting the call stack and crashing.
+The original `E8` instruction in `CreateProcessWithLogonCommonW` would have pushed `CommonW+0x769` as the return address before jumping to `c_Secl`. Our `E9 JMP` replacement pushes nothing so `CommonW+0x769` is never on the stack. The `CALL [RIP+2]` in the stub pushes the wrong return address (`stub+0x11`), causing `c_Secl` to return into the stub instead of back into `CommonW`, corrupting the call stack and crashing.
 
 The fix is to manually `PUSH` the correct return address before jumping to `c_Secl`. Since `c_Secl`'s `RET` will simply pop whatever is on top of the stack, we compute `pCallSite+5` (the instruction immediately after our patched `E9`) at install time, store it in the stub, and push it before the jump:
 
@@ -354,7 +354,7 @@ The fallback behavior is worth noting: if `--ppid` is specified but no process w
 
 ## PPID Spoofing from a Normal User Session
 
-It is worth pointing out that this technique is not limited to SYSTEM contexts. Since the hook targets `c_SeclCreateProcessWithLogonW` inside `advapi32.dll`  a module that is already loaded in every process that calls `CreateProcessWithLogonW`  patching it requires no elevated privileges whatsoever. Any normal user process can install this hook in its own address space and benefit from the PID spoofing. This makes it a general-purpose primitive, not just a SYSTEM bypass.
+It is worth pointing out that this technique is not limited to SYSTEM contexts. Since the hook targets `c_SeclCreateProcessWithLogonW` inside `advapi32.dll` a module that is already loaded in every process that calls `CreateProcessWithLogonW` patching it requires no elevated privileges whatsoever. Any normal user process can install this hook in its own address space and benefit from the PID spoofing. This makes it a general-purpose primitive, not just a SYSTEM bypass.
 
 ```powershell
 ./Poc.exe -u "Domain\Current_username" -p "password" --hook --ppid explorer
@@ -364,7 +364,7 @@ It is worth pointing out that this technique is not limited to SYSTEM contexts. 
 
 ## Conclusion
 
-What looked like a simple token impersonation problem turned out to be a subtle interaction between the RPC client stub, the seclogon service's impersonation model, and the access rights of the calling process. The key insight is that seclogon does not just validate the caller's token — it actively uses that token to open the caller's own process, creating a hard dependency on process ownership that has nothing to do with token privileges or integrity level.
+What looked like a simple token impersonation problem turned out to be a subtle interaction between the RPC client stub, the seclogon service's impersonation model, and the access rights of the calling process. The key insight is that seclogon does not just validate the caller's token it actively uses that token to open the caller's own process, creating a hard dependency on process ownership that has nothing to do with token privileges or integrity level.
 
 By patching a single DWORD in the marshaled RPC request structure before it leaves the client, we can satisfy seclogon's requirement and call `CreateProcessWithLogonW` successfully from any context, including SYSTEM. But beyond the bypass itself, this also unlocks a cleaner primitive: spawning a process under arbitrary credentials with a spoofed parent PID, simply by supplying the current user's own credentials. No token manipulation, no privilege requirements just a small patch to the RPC structure before it goes out on the wire.
 
