@@ -345,7 +345,7 @@ As for usage, the PoC supports the following options:
 * `--ppid <process_name>` preferred parent process name for PPID spoofing must be owned by the `-t` user. If not found, falls back to the process the token was stolen from
 * `--hook` force the hook even from a non-SYSTEM context showcases that the mechanism works from a normal user session too. When combined with `--ppid`, uses a process owned by the current user as the spoofed parent. Falls back to the caller's own PID if not found
 * `-c <cmdline>` command to spawn (default: `cmd.exe`)
-* `--sleep <ms>` sleep before calling `CreateProcessWithLogonW` — useful for attaching a debugger
+* `--sleep <ms>` sleep before calling `CreateProcessWithLogonW` useful for attaching a debugger
 * `-h, --help` show usage information
 
 The fallback behavior is worth noting: if `--ppid` is specified but no process with that name is found running under the `-t` user, the tool automatically falls back to the PID of the process from which the token was originally stolen. Since that PID is guaranteed to be owned by the target user, `seclogon`'s `OpenProcess(0x4C0)` will always succeed regardless of the `--ppid` preference.
