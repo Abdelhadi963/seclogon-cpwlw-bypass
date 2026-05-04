@@ -356,6 +356,10 @@ The fallback behavior is worth noting: if `--ppid` is specified but no process w
 
 It is worth pointing out that this technique is not limited to SYSTEM contexts. Since the hook targets `c_SeclCreateProcessWithLogonW` inside `advapi32.dll` a module that is already loaded in every process that calls `CreateProcessWithLogonW` patching it requires no elevated privileges whatsoever. Any normal user process can install this hook in its own address space and benefit from the PID spoofing. This makes it a general-purpose primitive, not just a SYSTEM bypass.
 
+{% hint style="warning" %}
+just a simple note is that this poc uses an inline hook with pattern matching and a hardcoded offset as a fallback it's tested into diffrent windows 11 builds and if you wanna use it in windows 10 you might adjust the stub in `hook.h` header file.
+{% endhint %}
+
 ```powershell
 ./Poc.exe -u "Domain\Current_username" -p "password" --hook --ppid explorer
 ```
