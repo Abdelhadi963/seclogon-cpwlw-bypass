@@ -8,9 +8,7 @@ description: >-
 
 ## Background and Motivation
 
-Recently I was implementing a remote PRT extraction tool designed to run in hybrid-joined Azure environments, where users from an on-premises Active Directory domain have some level of access to Azure AD resources. The idea was simple: build a variant of **PsExec** by replacing the embedded service with logic that scans running processes owned by normal users, steals their token, and runs the PRT extraction logic in a new thread. The flow is straightforward `OpenProcessToken` -> `DuplicateTokenEx` -> `ImpersonateLoggedOnUser` -> run PRT dump function -> `RevertToSelf`.
-
-But I wanted to make the tool more complete by supporting arbitrary user credentials from the on-premises domain. In my lab I was using Password Hash Sync, so I could pass user credentials to get an interactive session using `CreateProcessWithLogonW`, supply a dummy command like `cmd /c timeout 5`, and give the **CloudAP** plugin just enough time to cache the PRT cookie into the new session. From there, I could steal the token from that session and extract the PRT cookie for the target user. This approach effectively allows PRT extraction for any on-premises user whose credentials are known.
+While building a `psexe`-style tool for post-exploitation, I needed to spawn processes under arbitrary user credentials from a SYSTEM context. The natural choice was `CreateProcessWithLogonW`  it handles credential validation and session setup cleanly, and it's exactly what `runas.exe` uses under the hood.
 
 There's just one problem as every Windows internals enthusiast knows, `CreateProcessWithLogonW` cannot be called from a SYSTEM context. Microsoft documents this explicitly:
 
