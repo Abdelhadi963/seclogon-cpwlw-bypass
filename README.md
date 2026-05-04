@@ -75,6 +75,26 @@ If we look at the worker function `SlrCreateProcessWithLogon`, we can clearly se
 
 <figure><img src=".gitbook/assets/image (10).png" alt=""><figcaption></figcaption></figure>
 
+Inside `SlrCreateProcessWithLogon`, after `RpcImpersonateClient`, seclogon calls:
+
+```c
+OpenProcess(0x4C0, FALSE, dwProcessId);
+```
+
+`0x4C0` decomposes as:
+
+```asm
+0x400  PROCESS_QUERY_INFORMATION   -> read process token, PEB, exit code
+0x040  PROCESS_DUP_HANDLE          -> duplicate handles from caller into child
+0x080  PROCESS_CREATE_PROCESS      -> use caller as parent process (PPID)
+       -----
+0x4C0
+```
+
+This is why PPID spoofing is a free side effect seclogon explicitly requests `PROCESS_CREATE_PROCESS` on `dwProcessId`, meaning whatever PID you put in that field becomes the parent of the spawned process.
+
+This is also exactly why the bypass works: by pointing `dwProcessId` at a user-owned process, the impersonated medium-integrity token can satisfy all three access rights on that process, and seclogon proceeds normally.
+
 To summarize:
 
 {% hint style="info" %}
@@ -281,19 +301,66 @@ Let's now test it from a SYSTEM context.
 
 The hook fired successfully and the session spawned. The only remaining cleanup is unhooking after the call I will add that portion of code in the final PoC.
 
+### Stub Revision: The Missing Return Address
+
+The original `E8` instruction in `CreateProcessWithLogonCommonW` would have pushed `CommonW+0x769` as the return address before jumping to `c_Secl`. Our `E9 JMP` replacement pushes nothing  so `CommonW+0x769` is never on the stack. The `CALL [RIP+2]` in the stub pushes the wrong return address (`stub+0x11`), causing `c_Secl` to return into the stub instead of back into `CommonW`, corrupting the call stack and crashing.
+
+The fix is to manually `PUSH` the correct return address before jumping to `c_Secl`. Since `c_Secl`'s `RET` will simply pop whatever is on top of the stack, we compute `pCallSite+5` (the instruction immediately after our patched `E9`) at install time, store it in the stub, and push it before the jump:
+
+```asm
+; final stub - CORRECT (39 bytes)
+B8 xx xx xx xx          MOV EAX, spoofPid
+89 81 D8 00 00 00       MOV [RCX+0D8h], EAX    ; patch SECL_REQUEST.dwProcessId
+FF 35 06 00 00 00       PUSH [RIP+6]            ; push CommonW+769 as retaddr
+FF 25 08 00 00 00       JMP  [RIP+8]            ; jump to c_Secl
+xx xx xx xx xx xx xx xx CommonW+769             ; pCallSite+5, computed at install
+xx xx xx xx xx xx xx xx c_Secl addr             ; resolved from E8 rel32 at call site
+```
+
+`c_Secl` executes normally, hits its `RET`, pops `CommonW+0x769` from the stack, and returns cleanly into `CreateProcessWithLogonCommonW` as if nothing happened. This was verified live in WinDbg by manually patching the stub in memory and confirming the breakpoint at `CommonW+0x76D` was hit cleanly after the spawn.
+
+I assembled all of this into a PoC you can find the full code in my GitHub repository: [`seclogon-cpwlw-bypass`](https://github.com/Abdelhadi963/seclogon-cpwlw-bypass.git).
+
+To build:
+
+bash
+
+```bash
+x86_64-w64-mingw32-gcc main.c -o PoC.exe -lntdll -static -static-libgcc -DDEBUG_BUILD=1
+```
+
+Let's now test it from a SYSTEM context.
+
+<figure><img src=".gitbook/assets/image (28).png" alt=""><figcaption></figcaption></figure>
+
+The PoC exits cleanly with exit code 0.
+
+### Updated PoC Usage
+
 As for usage, the PoC supports the following options:
 
-* `--ppid <process_name>` spoof a specific parent process by name.
-* `-t <username>` specify the target user to steal the token from.
-* `-pid <pid>` use a PID instead of a username to identify the token source.
+* `-u <DOMAIN\user>` target credentials to spawn the process as (required)
+* `-p <password>` password for the target credentials (required)
+* `-t <username>` username to steal the impersonation token from (SYSTEM path)
+* `--ppid <process_name>` preferred parent process name for PPID spoofing must be owned by the `-t` user. If not found, falls back to the process the token was stolen from
+* `--hook` force the hook even from a non-SYSTEM context showcases that the mechanism works from a normal user session too. When combined with `--ppid`, uses a process owned by the current user as the spoofed parent. Falls back to the caller's own PID if not found
+* `-c <cmdline>` command to spawn (default: `cmd.exe`)
+* `--sleep <ms>` sleep before calling `CreateProcessWithLogonW` — useful for attaching a debugger
+* `-h, --help` show usage information
 
-If the stolen token lacks sufficient privileges to open the specified parent process, the tool will automatically fall back to using the process from which the token was originally stolen.
+The fallback behavior is worth noting: if `--ppid` is specified but no process with that name is found running under the `-t` user, the tool automatically falls back to the PID of the process from which the token was originally stolen. Since that PID is guaranteed to be owned by the target user, `seclogon`'s `OpenProcess(0x4C0)` will always succeed regardless of the `--ppid` preference.
 
-<figure><img src=".gitbook/assets/image (25).png" alt=""><figcaption></figcaption></figure>
+<figure><img src=".gitbook/assets/image (30).png" alt=""><figcaption></figcaption></figure>
 
-### A Note on Privilege Requirements
+## PPID Spoofing from a Normal User Session
 
 It is worth pointing out that this technique is not limited to SYSTEM contexts. Since the hook targets `c_SeclCreateProcessWithLogonW` inside `advapi32.dll`  a module that is already loaded in every process that calls `CreateProcessWithLogonW`  patching it requires no elevated privileges whatsoever. Any normal user process can install this hook in its own address space and benefit from the PID spoofing. This makes it a general-purpose primitive, not just a SYSTEM bypass.
+
+```powershell
+./Poc.exe -u "Domain\Current_username" -p "password" --hook --ppid explorer
+```
+
+<figure><img src=".gitbook/assets/image (31).png" alt=""><figcaption></figcaption></figure>
 
 ## Conclusion
 
