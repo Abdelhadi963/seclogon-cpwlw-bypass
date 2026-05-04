@@ -8,7 +8,7 @@ description: >-
 
 ## Background and Motivation
 
-While building a `psexe`-style tool for post-exploitation, I needed to spawn processes under arbitrary user credentials from a SYSTEM context. The natural choice was `CreateProcessWithLogonW`  it handles credential validation and session setup cleanly, and it's exactly what `runas.exe` uses under the hood.
+While building a `psexec`-style tool for post-exploitation, I needed to spawn processes under arbitrary user credentials from a SYSTEM context. The natural choice was `CreateProcessWithLogonW`  it handles credential validation and session setup cleanly, and it's exactly what `runas.exe` uses under the hood.
 
 There's just one problem as every Windows internals enthusiast knows, `CreateProcessWithLogonW` cannot be called from a SYSTEM context. Microsoft documents this explicitly:
 
